@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openneuro-eeg-triage"
+version = "0.1.0"
+description = "Automated EEG quality triage for OpenNeuro/BIDS datasets: download, screen, delete."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ali Taghizadeh", email = "alitaghi8305@gmail.com" }]
+keywords = ["EEG", "quality control", "BIDS", "OpenNeuro", "MNE-Python", "neuroscience"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "numpy>=1.23",
+  "scipy>=1.9",
+  "pandas>=1.5",
+  "matplotlib>=3.6",
+  "mne>=1.6",
+  "edfio>=0.4",
+  "pymatreader>=0.0.32",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+datalad = ["datalad"]
+dev = ["pytest>=7", "pytest-cov", "pybv", "eeglabio", "ruff"]
+
+[project.scripts]
+openneuro-eeg-triage = "openneuro_eeg_triage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/alitkbbl/openneuro-eeg-triage"
+Issues = "https://github.com/alitkbbl/openneuro-eeg-triage/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+openneuro_eeg_triage = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]
+markers = ["slow: end-to-end tests that screen many synthetic recordings"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E731", "E741", "I001"]

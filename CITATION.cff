@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "openneuro-eeg-triage: automated EEG quality triage for OpenNeuro and BIDS datasets"
+type: software
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/alitkbbl/openneuro-eeg-triage"
+authors:
+  - family-names: Taghizadeh
+    given-names: Ali
+    email: alitaghi8305@gmail.com
+    # orcid: "https://orcid.org/0000-0000-0000-0000"   # TODO: add your ORCID
+keywords:
+  - EEG
+  - quality control
+  - BIDS
+  - OpenNeuro
+  - MNE-Python
