@@ -1,260 +1,274 @@
 # openneuro-eeg-triage
 
-**Automated EEG quality triage for OpenNeuro and BIDS datasets: download, screen, delete.**
+<p align="left">
+  <img src="https://img.shields.io/badge/EEG-Quality%20Triage-6f42c1?style=flat" alt="EEG Quality Triage" />
+  <img src="https://img.shields.io/badge/OpenNeuro-compatible-2563eb?style=flat" alt="OpenNeuro compatible" />
+  <img src="https://img.shields.io/badge/BIDS-supported-0f9d58?style=flat" alt="BIDS supported" />
+  <img src="https://img.shields.io/badge/Workflow-Streaming-f59e0b?style=flat" alt="Streaming workflow" />
+  <img src="https://img.shields.io/badge/License-MIT-64748b?style=flat" alt="MIT License" />
+</p>
 
-Give it any OpenNeuro dataset id (for example `ds005385`) or a local BIDS folder. It inspects the dataset
-*without downloading any EEG data*, then screens the recordings **one at a time** with a 5-layer quality engine and
-deletes each recording's raw files before fetching the next. Local and Colab disks never fill up, and the results
-accumulate into one globally ranked Excel workbook.
+**Automated quality triage for OpenNeuro and local BIDS EEG datasets.**
 
-```bash
-pip install openneuro-eeg-triage          # or: pip install -e ".[dev]" from a clone
+Screen large EEG datasets without filling your disk: inspect metadata first, process recordings **one at a time**, and automatically clean up downloaded files. All results are collected in a cumulative Excel report with global quality rankings.
 
-openneuro-eeg-triage --dataset ds005385 --inspect                    # what is in it? (no EEG download)
-openneuro-eeg-triage --dataset ds005385 --subjects 1 to 20 --stream  # screen subjects 1-20
-openneuro-eeg-triage --dataset ds005385 --subjects 21 to 30          # later: extends and re-ranks the same results
+> **Inspect → Download → Screen → Clean up → Rank**  
+> Designed for reproducible, unattended runs on local machines, servers, and Google Colab.
+
+## 🚀 Quick start
+
+``` bash
+pip install openneuro-eeg-triage
+
+# Inspect dataset contents without downloading EEG data
+openneuro-eeg-triage --dataset ds005385 --inspect
+
+# Screen selected subjects
+openneuro-eeg-triage --dataset ds005385 --subjects 1 to 20 --stream
+
+# Add more subjects; existing results are retained and re-ranked
+openneuro-eeg-triage --dataset ds005385 --subjects 21 to 30
 ```
 
-It is **100 % non-interactive**: every choice is a command-line flag and the tool never pauses to ask a question,
-so it runs unattended in scripts, cron jobs, Slurm and Colab.
+The CLI is fully non-interactive and suitable for scripts, scheduled
+jobs, Slurm, and Google Colab.
 
----
+## 🧠 What it does
 
-## Contents
+The tool is designed for **first-pass triage**, not strict QC. It aims
+to retain recordings that are healthy or repairable and reject only
+clearly unusable data. Every decision includes a reason code.
 
-1. [Why](#1-why) · 2. [Scope: standard montages only](#2-scope-standard-10-20--10-10--10-05-montages-only) ·
-3. [Download–Screen–Delete](#3-downloadscreendelete-single-recording-peak-disk-footprint) · 4. [The 5 layers](#4-the-5-qc-layers) ·
-5. [Adaptive rules](#5-rules-that-adapt-to-the-recording) · 6. [Command line](#6-command-line) · 7. [Outputs](#7-outputs) ·
-8. [Cumulative runs](#8-cumulative-runs-and-resuming) · 9. [Colab](#9-google-colab) · 10. [Dortmund benchmark](#10-benchmark-the-dortmund-vital-study-ds005385) ·
-11. [Testing](#11-testing) · 12. [Limitations](#12-limitations) · 13. [Citation, license](#13-citation-and-license)
+A recording is not rejected solely because it has:
 
----
+-   Weak posterior alpha or no clear alpha blocking (`FLAG`).
+-   Signal drift (statistics use a baseline-corrected copy; raw data
+    remain unchanged).
+-   50/60 Hz mains noise (`FLAG`; can be handled during preprocessing).
+-   A small number of bad channels (`USABLE_NEEDS_INTERPOLATION`).
 
-## 1. Why
+## 📁 Supported data
 
-Large public EEG datasets contain recordings that are fine, recordings that are easily repaired, and a few that are
-broken. Before any real analysis you need a quick, reproducible answer to **"which recordings can I use?"** Looking at
-hundreds of participants by eye is slow and subjective, and strict automatic rules throw away good data.
+-   **Montages:** International 10-20, 10-10, and 10-05 systems, at any
+    channel density.
+-   **Formats:** EDF, BDF, BrainVision, EEGLAB (`.set` with optional
+    `.fdt`), and FIF.
+-   **Layouts:** Single- and multi-session BIDS EEG directories.
+-   **Sources:** OpenNeuro dataset IDs or local BIDS folders.
 
-`openneuro-eeg-triage` is a **triage**, not strict QC. It keeps everything healthy or repairable and rejects only what is
-catastrophic, with a short **reason code for every decision**. A recording is *not* rejected only because
+Channel names are normalised (for example, `EEG Fz-REF` to `Fz`, and
+`T3/T4/T5/T6` to `T7/T8/P7/P8`). At least 70% of EEG channels must have
+standard names, and at least 6 of 10 core electrodes must be
+identifiable. Unsupported or ambiguous montages are rejected as
+`UNSUPPORTED_MONTAGE`; the tool does not guess mappings. `O1` and `O2`
+are required; `Oz` is optional.
 
-* the person is an **alpha non-responder** (weak alpha with eyes closed is common in healthy adults, so it is a `FLAG`);
-* the signal drifts (statistics use a baseline-corrected copy, the raw signal is never modified);
-* there is **mains noise** at 50 or 60 Hz (a notch filter fixes it, so it is a `FLAG`);
-* a handful of channels are bad (they can be interpolated, so the recording is `USABLE_NEEDS_INTERPOLATION`).
+## ♻️ Download–screen–delete workflow
 
-Most EEG tools assume the data are already on disk. This one targets the step *before* analysis.
+For each recording, the tool:
 
-## 2. Scope: standard 10-20 / 10-10 / 10-05 montages only
+1.  Downloads BIDS sidecars first (`*_eeg.json`, `*_channels.tsv`,
+    `*_events.tsv`).
+2.  Downloads the EEG file and its required companion files.
+3.  Screens the recording and saves its metrics.
+4.  Deletes downloaded files, including after an error.
 
-Only caps labelled with the **international 10-20, 10-10 or 10-05 systems** are supported, at any density (19, 21, 32,
-64, 128 channels ...). There is no hard-coded channel count.
+Only one downloaded recording is kept on disk at a time. Local BIDS
+files are read in place and are never deleted.
 
-* **Name normalisation:** `EEG Fz-REF` → `Fz`, `fp1` → `Fp1`, `OZ` → `Oz`, and legacy 10-20 names `T3/T4/T5/T6` → `T7/T8/P7/P8`.
-* **Standard-montage gatekeeper (Layer 1):** at least 70 % of the EEG channels must carry a standard name *and* at least
-  6 of the 10 core anchors (`Fz Cz Pz Oz F3 F4 C3 C4 O1 O2`) must be verifiable.
-* **Anything else is rejected cleanly, never guessed:** EGI geodesic nets (`E1..E128`), unmapped BioSemi (`A1..A32`) and other
-  proprietary labels give `UNSUPPORTED_MONTAGE` in Layer 1. When the dataset ships a BIDS `channels.tsv`, this is decided
-  **before the large binary file is downloaded**.
-* **Classic 19-channel caps have no `Oz`.** The posterior alpha region of interest is `O1, O2, Oz` when `Oz` exists and falls
-  back to `O1, O2` otherwise. `Oz` is never required; `O1` and `O2` are.
+Download methods:
 
-Supported file formats: **EDF, BDF, BrainVision (`.vhdr` + `.vmrk` + `.eeg`/`.dat`), EEGLAB (`.set`, with optional `.fdt`) and
-FIF**, in single-session (`sub-X/eeg/`) or multi-session (`sub-X/ses-Y/eeg/`) layouts with optional `acq-*` and `run-*` entities.
+-   `auto` (default): DataLad when available; otherwise HTTPS.
+-   `https`: downloads from OpenNeuro's public S3 bucket; uses the
+    latest snapshot.
+-   `datalad`: supports an exact snapshot via `--snapshot`.
 
-## 3. Download–Screen–Delete (single-recording peak disk footprint)
+Dataset discovery uses the OpenNeuro GitHub mirror, with S3 listing as a
+fallback. Set `GITHUB_TOKEN` if GitHub rate limits are encountered.
 
-For every selected recording the tool
+## 🔬 QC pipeline
 
-1. fetches the small sidecars (`*_eeg.json`, `*_channels.tsv`, `*_events.tsv`) first;
-2. fetches the main file **and all companion files** (`.vhdr`+`.vmrk`+`.eeg`, `.set`+`.fdt`; the names in the BrainVision header's
-   `DataFile=` / `MarkerFile=` lines are honoured);
-3. screens it in memory and **persists the metrics**;
-4. deletes everything it fetched, in a `finally:` block, so also after an error.
+Each recording is assessed across five layers:
 
-At any moment only **one recording** of the dataset is on disk. The raw data are never modified. With `--bids-dir` the files are
-read in place and **never deleted**.
-
-Backends (`--download-method`): `https` pulls from OpenNeuro's public S3 bucket and needs only Python; `datalad` uses
-`datalad get` / `datalad drop` and pins an exact snapshot (`--snapshot`); `auto` (default) uses DataLad if it and git-annex
-are installed, otherwise HTTPS. Note that HTTPS always serves the *newest* snapshot.
-
-Discovery (`--inspect`) uses the dataset's git tree on the `OpenNeuroDatasets` GitHub mirror (an exact snapshot tag), with the
-public S3 bucket listing as a fallback. Set `GITHUB_TOKEN` if GitHub rate-limits you.
-
-## 4. The 5 QC layers
-
-Every finding has a verdict and a short reason code. **PASS** nothing to note · **FLAG** small problem, recording kept ·
-**FAIL** clear problem, not usable · **MISSING** not available (never stops the run).
-
-| # | Layer | Checks | FAIL | FLAG |
-|---|---|---|---|---|
-| 1 | **Header & metadata** | EEG channel count, sampling rate, duration, unique names, **standard montage**, `O1`/`O2` present, JSON sidecar | non-standard montage, fewer than `min_eeg_channels` (16), sfreq below `min_sfreq_hz` (128), shorter than 60 s, duplicate/empty names, `O1`/`O2` missing | duration outside 2 min – 1 h, sampling rate above `max_sfreq_hz`, sidecar differs from the file |
-| 2 | **Channel integrity** | flat, clipped, noisy and **spatially uncorrelated** channels; frozen segments | see below | one critical channel bad; frozen segment over 5 s |
-| 3 | **Amplitude** | typical amplitude (median 1-s STD of the baseline-corrected signal) | median outside 1–100 µV | more than 10 % of channels above 100 µV |
-| 4 | **Spectral** | alpha peak, Eyes Closed / Eyes Open alpha blocking, mains line noise (50 or 60 Hz) | dead spectrum on the posterior ROI; line noise **together with** clipping of half the channels | weak alpha, no alpha blocking, line noise |
-| 5 | **Consistency** | same channel names, order and sampling rate in all recordings of a subject | differs | |
-
-**Bad-channel decision logic** (Layer 2). Critical channels default to `Cz, Fz, Pz, O1, O2` (`--critical-channels`).
-
-| Situation | Verdict | Code |
-|---|---|---|
-| 2 or more critical channels bad | FAIL | `CRITICAL_CHANNELS_BAD` |
-| more bad channels than the allowed maximum (below) | FAIL | `TOO_MANY_BAD_CHANNELS` |
-| 1 critical channel bad | FLAG (still usable after interpolation) | `CRITICAL_CHANNEL_BAD` |
-| 1 to *max* bad channels, at most one critical | PASS, label *needs interpolation* | `USABLE_NEEDS_INTERPOLATION` |
-
-Each recording gets a label (`USABLE`, `USABLE_WITH_FLAGS`, `USABLE_NEEDS_INTERPOLATION`, `REJECT`); a subject gets the most
-demanding label of its recordings, or `PARTIALLY_USABLE` when some are usable and others rejected. The full list of reason codes
-is in the `Legend` sheet of the workbook.
-
-**Eyes Closed / Eyes Open.** The condition is inferred from the `task-*` and `acq-*` labels (`closed`, `ec`, `EyesClosed` →
-closed; `open`, `eo` → open) and recordings are paired on all *other* entities (session, acq/task, run). A bare `rest` is
-`unknown`: the eye state cannot be known, so no alpha flag is raised for it. Override with `--closed-tasks` / `--open-tasks`.
-Alpha prominence is judged on Eyes-Closed recordings only; a missing partner is only flagged when the subject has both
-conditions.
-
-## 5. Rules that adapt to the recording
-
-| Quantity | Rule |
+| Layer | Main checks |
 |---|---|
-| Max bad channels | `max(1, floor(max_bad_channel_ratio × n_eeg))`, ratio default **0.10** → 64 ch: 6, 65 ch: 6, 32 ch: 3, 19 ch: 1. Override with `--max-bad-channel-ratio R` **or** an exact `--max-bad-channels N`. |
-| Spatial-correlation thresholds (0.20; 0.18 for O1/O2/Oz) | multiplied by `sqrt(n_eeg / 64)`, never below 0.6 and never above 1, so sparse caps are not penalised by 64-channel assumptions (19 ch → ×0.60, 32 ch → ×0.71). The "reference not trusted" safeguard (more than half of the channels below threshold → nobody is marked bad, `LOW_GLOBAL_SPATIAL_CORRELATION`) is a fraction already. |
-| High-frequency bound | `min(100 Hz, 0.9 × Nyquist)` when `sfreq ≤ 250 Hz` (correlation band, dead-spectrum band, harmonics); a line whose flank would exceed 98 % of Nyquist uses its lower flank only, or is reported as not assessable. |
-| Mains frequency | `--line-freq 50\|60` > `PowerLineFrequency` in `*_eeg.json` > spectral auto-detection (a candidate must stand out by ≥ 6 dB, otherwise 50 Hz is reported with source `default_no_line_detected`). |
-| Frozen-segment length | `frozen_min_s` = 0.1 s (100 samples at 1 kHz) at any sampling rate. |
+| **1. Header & metadata** | Channel count, sampling rate, duration, channel names, montage, `O1`/`O2`, and sidecar consistency |
+| **2. Channel integrity** | Flat, clipped, noisy, spatially uncorrelated channels, and frozen segments |
+| **3. Amplitude** | Typical signal amplitude using the median 1-second standard deviation |
+| **4. Spectral** | Posterior alpha, eyes-closed/open alpha blocking, and 50/60 Hz line noise |
+| **5. Consistency** | Channel names, order, and sampling rate across a subject's recordings |
 
-Every threshold lives in `QCConfig` ([`config.py`](src/openneuro_eeg_triage/config.py)) and can be changed with a dedicated flag,
-`--config FILE.json`, or `--set KEY=VALUE` (repeatable). A fingerprint of all thresholds is stored with every result.
+Findings are labelled `PASS`, `FLAG`, `FAIL`, or `MISSING`. Missing
+information does not stop a run.
 
-## 6. Command line
+Bad-channel handling uses configurable critical channels (default:
+`Cz, Fz, Pz, O1, O2`). Two or more bad critical channels, or too many
+bad channels overall, cause rejection. A recording with a limited number
+of bad channels can remain usable after interpolation.
 
-```text
+Recording labels are `USABLE`, `USABLE_WITH_FLAGS`,
+`USABLE_NEEDS_INTERPOLATION`, or `REJECT`. Subject-level status reflects
+the most demanding recording outcome, or `PARTIALLY_USABLE` when usable
+and rejected recordings coexist. See the workbook's **Legend** sheet for
+all reason codes.
+
+Eyes-closed/open conditions are inferred from `task-*` and `acq-*`
+labels. A plain `rest` label is treated as unknown. Use `--closed-tasks`
+and `--open-tasks` to override detection.
+
+## ⚙️ Adaptive thresholds
+
+Several rules scale with the recording:
+
+-   Maximum bad channels defaults to 10% of EEG channels, with a minimum
+    of one.
+-   Spatial-correlation thresholds are adjusted for channel count.
+-   High-frequency analysis respects the Nyquist frequency.
+-   Mains frequency is taken from `--line-freq`, BIDS metadata, or
+    spectral detection.
+-   Frozen segments use a 0.1-second minimum.
+
+All thresholds are configurable through `QCConfig`,
+`--config FILE.json`, or repeatable `--set KEY=VALUE` options. The
+threshold fingerprint is stored with each result.
+
+## 💻 Command line
+
+``` text
 openneuro-eeg-triage (--dataset DSID | --bids-dir DIR) [options]
 ```
 
-| Group | Flags |
+Common options:
+
+| Purpose | Options |
 |---|---|
-| Source | `--dataset DSID`, `--bids-dir DIR`, `--snapshot TAG` |
-| Selection | `--subjects 28` · `1 2 3` · `1 to 20` · `1-20` · `5,9` · `sub-PD01` (mixable), `--sessions`, `--tasks`, `--limit N`, `--inspect` |
-| Output / run | `--output-dir/-o`, `--work-dir`, `--repo-dir`, `--download-method auto\|https\|datalad`, `--stream`, `--cleanup/--no-cleanup`, `--keep-data`, `--plots/--no-plots`, `--resume/--no-resume`, `--force`, `--overwrite-all`, `--no-hash`, `--stop-after-failures N`, `--summary-every N`, `--quiet`, `--debug` |
-| Thresholds | `--max-bad-channel-ratio R`, `--max-bad-channels N`, `--critical-channels CH ...`, `--line-freq auto\|50\|60`, `--min-sfreq HZ`, `--max-sfreq HZ`, `--min-duration S`, `--min-eeg-channels N`, `--closed-tasks`, `--open-tasks`, `--config FILE`, `--set KEY=VALUE` |
+| **Source** | `--dataset`, `--bids-dir`, `--snapshot` |
+| **Select data** | `--subjects`, `--sessions`, `--tasks`, `--limit`, `--inspect` |
+| **Run and output** | `--output-dir` / `-o`, `--work-dir`, `--download-method`, `--stream`, `--resume`, `--force`, `--overwrite-all` |
+| **QC settings** | `--max-bad-channel-ratio`, `--max-bad-channels`, `--critical-channels`, `--line-freq`, `--min-sfreq`, `--max-sfreq`, `--min-duration`, `--min-eeg-channels`, `--config`, `--set` |
 
-Run `openneuro-eeg-triage --help` for the full text. Exit codes: **0** finished · **1** technical problem (network, unfinished
-subjects, Ctrl+C) · **2** invalid input (bad flags, unknown dataset, no EEG data, empty selection).
+For all options, run `openneuro-eeg-triage --help`.
 
-**Pre-flight.** Before anything is downloaded the tool tells you whether the dataset exists, whether it contains EEG at all
-(an MRI-only dataset exits with code 2 and says which modalities it found), and prints an executive summary: title, subjects,
-sessions, tasks, file formats and the number of recordings.
+Before downloading, `--inspect` reports dataset metadata, available
+modalities, subjects, sessions, tasks, file formats, and recording
+counts. Invalid inputs exit with code `2`; technical or incomplete runs
+exit with code `1`; successful runs exit with code `0`.
 
-## 7. Outputs
+## 📊 Outputs
 
-```text
+The output directory contains:
+
+``` text
 qc_output/
-├── qc_summary.xlsx          6-sheet workbook over ALL subjects in this folder (rebuilt on every run)
-├── qc_results.csv           one row per recording, every metric of every layer, SHA-256 of the inputs
-├── qc_subjects.csv          one row per subject
-├── qc_summary.json          counts, dataset, version, the complete thresholds
-├── audit_trail.jsonl        append-only log: start, downloaded, screened, cleaned, errors
-├── .openneuro_eeg_triage.json   marker: which dataset this folder belongs to
+├── qc_summary.xlsx       # Six-sheet report and global rankings
+├── qc_results.csv        # One row per recording, with QC metrics
+├── qc_subjects.csv       # One row per subject
+├── qc_summary.json       # Dataset, counts, version, thresholds
+├── audit_trail.jsonl     # Append-only run and cleanup log
+├── .openneuro_eeg_triage.json
 └── sub-XXX/
-    ├── status.json          subject status + final per-recording results
-    ├── recordings/          cached per-recording results (this is what --resume reads)
-    └── figures/             posterior spectra, channel-quality topomap, amplitude heatmap
+    ├── status.json
+    ├── recordings/       # Cached results used by --resume
+    └── figures/          # Spectra, topomaps, amplitude heatmaps
 ```
 
-**`qc_summary.xlsx`** has six sheets: **Overview** (live formulas on the other sheets and charts), **Subjects** (one row per
-subject, with a global rank), **Recordings** (one row per recording), **Recording_Ranking** (all recordings ranked best to worst
-by a 0–100 quality score; rejected recordings always last), **Issues** (every finding) and **Legend** (statuses, verdicts, labels,
-reason codes, score definition, the thresholds used). The quality score uses seven signal criteria and only orders the
-recordings; it never changes a verdict. Electrode positions in the topomap come from MNE's standard template, not from
-individual digitisation.
+`qc_summary.xlsx` includes **Overview**, **Subjects**, **Recordings**,
+**Recording_Ranking**, **Issues**, and **Legend** sheets. Recordings are
+ranked by a 0--100 quality score; the score orders results but does not
+change QC verdicts.
 
-## 8. Cumulative runs and resuming
+## 🔁 Resuming and cumulative runs
 
-The workbook and CSV/JSON summaries are rebuilt from **every** `sub-*` folder in the output directory. Screen 20 subjects, then
-10 more, and the second run produces one complete workbook over all 30 subjects, with `Overview` recomputed and `Subjects` and
-`Recording_Ranking` re-ranked across all of them.
+All summaries are rebuilt from the subject folders in the output
+directory. You can screen subjects in batches and the workbook will
+include and re-rank all completed results.
 
-* Re-running the same command skips finished subjects and retries only unfinished ones (`--resume`, on by default). A subject is
-  *finished* when it was screened with the same QC logic and thresholds (a fingerprint is stored). Ctrl+C or a crash never
-  destroys finished work; per-recording results are cached.
-* A download that fails marks the recording `MISSING`, the subject `PARTIAL` / `NO_DATA`, and is retried next time. After 3
-  subjects in a row with failed downloads the batch stops by itself (`--stop-after-failures`).
-* `--force` re-screens the *selected* subjects and keeps and merges the others; `--overwrite-all` deletes all previous results in
-  the output directory first.
-* Results screened with different thresholds are kept but marked `config_stale` in the `Subjects` sheet, with a warning.
-* One output directory belongs to one dataset; mixing datasets is refused.
+-   `--resume` is enabled by default and skips completed subjects with
+    matching QC settings.
+-   Interrupted runs retain completed recording results.
+-   Failed downloads are marked missing and can be retried.
+-   `--force` re-screens selected subjects; `--overwrite-all` clears
+    previous output.
+-   Results from older settings are retained but marked `config_stale`.
+-   Each output directory is tied to one dataset.
 
-## 9. Google Colab
+## ☁️ Google Colab
 
-```python
+Mount Google Drive, then install and run:
+
+``` python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+``` bash
 !pip install -q openneuro-eeg-triage
-!openneuro-eeg-triage --dataset ds005385 --subjects 1 to 50 --stream --output-dir /content/drive/MyDrive/qc_output
+!openneuro-eeg-triage --dataset ds005385 --subjects 1 to 50 --stream \
+  --output-dir /content/drive/MyDrive/qc_output
 ```
 
-Mount Drive first (`from google.colab import drive; drive.mount('/content/drive')`) so results survive a disconnect, and run
-the same command again in a new session to continue.
+Run the same command in a later session to resume. Saving results to
+Drive protects them from Colab session disconnections.
 
-## 10. Benchmark: the Dortmund Vital Study (ds005385)
+## 🧪 Dortmund Vital benchmark (`ds005385`)
 
-The QC logic was first developed as a single-dataset prototype (`qc_eeg_subject.py`, QC version `screening-2.2`) on the Dortmund
-Vital Study resting-state EEG ([ds005385](https://openneuro.org/datasets/ds005385), 64 channels, 1 kHz, Eyes Closed / Eyes
-Open before and after a cognitive task, 465 GB). The prototype applied project-specific inclusion rules (age and trigger
-criteria, not part of this package) that select 427 of the 608 participants listed in `participants.tsv`, which implies
-2,276 expected recordings (142 two-session participants × 8 + 285 one-session participants × 4).
+The package generalises an earlier project-specific screening prototype
+developed on the Dortmund Vital Study (64 channels, 1 kHz, 465 GB).
 
-**Pre-flight check on the real dataset.** Running discovery on the git tree of snapshot 1.0.3 shows EEG files for only
-**374 of the 608 participants (1,998 recordings, all EDF; 266 of the 427 prototype-eligible participants)**. The number of
-recordings actually present therefore has to be taken from the dataset, not from the participant table. This is exactly the
-kind of fact `--inspect` reports before anything is downloaded. The real `channels.tsv` of the dataset (64 labels) is accepted by
-the standard-montage gatekeeper and is used as a test fixture (`tests/data/ds005385_channels.tsv`).
+For OpenNeuro snapshot `1.0.3`, dataset discovery found EEG files for
+**374 of 608 participants**, totalling **1,998 EDF recordings**. This
+differs from counts inferred from `participants.tsv`, illustrating why
+`--inspect` checks the actual dataset contents before downloading.
 
-This package generalises the prototype: the channel-count and sampling-rate locks are gone, thresholds adapt to the cap, and the
-Dortmund-specific participant rules were removed. At 64 channels and 1 kHz the defaults (maximum 6 bad channels, 5 critical
-channels, all thresholds) give **numerically identical** results to the prototype on synthetic data: every column of the channel
-table, the integrity and amplitude verdicts and all alpha and line-noise metrics were compared and are bit-identical
-(`tests/test_prototype_regression.py`). **A formal re-run of the whole dataset with this package and a recording-by-recording
-comparison with the prototype's results on real data is still to be done**; small differences are expected there (for example
-`Oz` is no longer required, the duration FLAG range is wider and the mains frequency is detected rather than fixed at 50 Hz).
+At 64 channels and 1 kHz, default settings produce bit-identical results
+to the prototype on synthetic regression data. A full real-data re-run
+and recording-by-recording comparison have **not yet been completed**.
 
-```bash
-openneuro-eeg-triage --dataset ds005385 --inspect                          # what is really in the snapshot
-openneuro-eeg-triage --dataset ds005385 --stream -o dortmund_qc            # screen everything that is there
+``` bash
+openneuro-eeg-triage --dataset ds005385 --inspect
+openneuro-eeg-triage --dataset ds005385 --stream -o dortmund_qc
 ```
 
-## 11. Testing
+## 🧰 Testing
 
-```bash
+``` bash
 pip install -e ".[dev]"
 pytest
 ```
 
-The suite uses **synthetic recordings only** (no network, no real data): clean and defective 19-, 32-, 64- and 128-channel
-caps, legacy channel names, 50 and 60 Hz line noise, flat/clipped/noisy/uncorrelated channels, frozen segments, scale errors,
-non-standard montages, all five file formats (including a hand-written BDF), and end-to-end runs of the CLI against a local
-fake OpenNeuro server that exercises the real HTTP code, including multi-batch cumulative re-ranking, resume, force, overwrite,
-failed downloads and Ctrl+C. The Overview formulas are recalculated with LibreOffice when it is installed. The thresholds are
-practical heuristics and have **not** been validated against manual ratings.
+Tests use synthetic recordings and a local mock OpenNeuro server. They
+cover multiple channel densities, supported file formats, common signal
+defects, cumulative runs, resume behaviour, failed downloads, and
+interruption handling.
 
-## 12. Limitations
+The default thresholds are practical heuristics and have not been
+validated against expert manual ratings.
 
-* This is a **first-pass screening**, not a replacement for expert review or a full preprocessing pipeline. The default
-  thresholds are heuristics from one dataset; check them on a few recordings of your own and adjust.
-* The **spatial-correlation criterion is the most data-dependent one**. Referencing, the reference electrode position and
-  frontal eye activity can lower the correlation of individual channels. Independent 1/f noise correlates with the median
-  reference at roughly |r| = 0.1–0.17, close to the default thresholds, so the criterion cannot separate every disconnected
-  channel from a poor one. The channel-count scaling in section 5 is a heuristic.
-* Only signal quality is judged. Trigger codes and the cognitive task are not interpreted. ECG/EOG channels are recognised and
-  excluded from the EEG analysis but not analysed.
-* HTTPS downloads serve OpenNeuro's newest snapshot; use DataLad for an exactly pinned version.
-* Non-standard montages are rejected, not interpolated onto a template.
+## ⚠️ Limitations
 
-## 13. Citation and license
+-   This is first-pass screening, not expert review or a preprocessing
+    pipeline.
+-   Default thresholds were developed from limited data; inspect sample
+    recordings and tune them for each dataset.
+-   Spatial correlation is sensitive to referencing, electrode
+    locations, and frontal eye activity.
+-   The tool evaluates signal quality; it does not interpret event
+    triggers or task performance.
+-   ECG/EOG channels are excluded from EEG analysis but are not
+    independently assessed.
+-   HTTPS uses the newest OpenNeuro snapshot; use DataLad to pin a
+    version.
+-   Non-standard montages are rejected rather than automatically
+    remapped.
 
-If you use this software, please cite it (see [`CITATION.cff`](CITATION.cff) and the JOSS paper in [`paper/`](paper/paper.md))
-and the dataset you screened. Released under the [MIT License](LICENSE). Contributions are welcome, see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+## 📚 Citation, license, and contribution
 
-Author: Ali Taghizadeh · <alitaghi8305@gmail.com>
+If you use this software, cite the package (see
+[`CITATION.cff`](CITATION.cff) and [`paper/`](paper/)) and the dataset
+you screened.
+
+Released under the [MIT License](LICENSE). Contributions are welcome;
+see [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
+**Author:** Ali Taghizadeh · <alitaghi8305@gmail.com>
