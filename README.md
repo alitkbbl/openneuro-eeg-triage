@@ -1,4 +1,4 @@
-# openneuro-eeg-triage
+# OpenNeuro EEG Triage
 
 <p align="left">
   <img src="https://img.shields.io/badge/EEG-Quality%20Triage-6f42c1?style=flat" alt="EEG Quality Triage" />
