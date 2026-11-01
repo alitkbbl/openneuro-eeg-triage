@@ -9,7 +9,7 @@ authors:
   - family-names: Taghizadeh
     given-names: Ali
     email: alitaghi8305@gmail.com
-    # orcid: "https://orcid.org/0009-0004-3772-1415"  
+    orcid: "https://orcid.org/0009-0004-3772-1415"  
 keywords:
   - EEG
   - quality control
