@@ -261,6 +261,7 @@ validated against expert manual ratings.
 -   Non-standard montages are rejected rather than automatically
     remapped.
 
+
 ## 📚 Citation, license, and contribution
 
 If you use this software, cite the package (see
